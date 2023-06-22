@@ -1,0 +1,1 @@
+Purpose:  Runs a time series model on the simulated data and checks to see how results differ between two arrays that are virtually identical save for "gaps" introduced in one array of length l.

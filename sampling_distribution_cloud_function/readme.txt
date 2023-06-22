@@ -1,0 +1,1 @@
+Purpose: A brute force way to use the sampling distribution of the sample mean from samples with limited sizes in order to ascertain their true means.
