@@ -1,0 +1,216 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+
+```{r}
+rm(list=ls())
+rep(gc(),3)
+```
+
+```{r}
+list.of.packages = c("data.table", "tidyverse","shiny","formattable","lubridate",'gridExtra')
+new.packages = list.of.packages[!(list.of.packages %in% installed.packages()[,"Package"])]
+if(length(new.packages)) install.packages(new.packages)
+
+library(data.table)
+library(tidyverse)
+library(shiny)
+library(formattable)
+library(lubridate)
+library(gridExtra)
+
+```
+
+```{r}
+
+#Set Dynamic Start Date
+t_0 = Sys.Date() %m+% months(-5)
+n = difftime(Sys.Date(), t_0 , units= 'days') %>% as.numeric()
+### DEFECTS
+defect = data.table(
+  date = seq(as.Date(t_0), by = 'day', length.out = n)
+  ,pending = abs(floor(rnorm(n,sd=5)))
+  ,in_progress = abs(floor(rnorm(n,sd=3)))
+  , recently_closed = abs(floor(rnorm(n,sd=2)))) %>%
+  data.table::melt( id.vars = 'date',variable.name = 'status', value.name = 'counts')
+
+
+
+### TIME DOWN
+min_down = abs(floor(rnorm(n,sd=15)))
+
+timeup = data.table(
+  date = seq(as.Date(t_0), by = 'day', length.out = n)
+  ,mins_down = min_down
+  ,mins_up = 60*24 - min_down
+)
+
+incidents = data.table(
+  date = seq(as.Date(t_0), by = 'day', length.out = n)
+  ,sev1 = abs(floor(rnorm(n,sd=5)))
+  ,sev2 = abs(floor(rnorm(n,sd=4)))
+  ,sev3 = abs(floor(rnorm(n,sd=3)))) %>% 
+    data.table::melt(id.vars = 'date' , variable.name = 'status', value.name = 'counts')
+
+
+# nps = data.table(
+#         Detractors = 35
+#         ,Passives = 12
+#         , Promoters = 38
+#         , NPS = (38/(38+12+38) - 35/(38+12+38))*100
+# )
+
+```
+
+
+```{r}
+
+statuses = c('Pending' = 'pending','In Progress'='in_progress','Recently Closed'='recently_closed')
+
+line_chart_choices = c('Issues in Development','Time Down','Incidents')
+
+library(shiny)
+ui <- fluidPage(
+  titlePanel('App Development Performance Dashboard')
+  
+  ,sidebarLayout(
+    sidebarPanel(
+      dateRangeInput(inputId = 'dateInput', label = 'Date Selector',start = min(defect$date),end = max(defect$date))
+     # ,checkboxGroupInput(inputId = 'statusInput', label = 'Status Selector', choices = statuses ,  selected=statuses)
+      ,radioButtons(inputId = 'radioInput', label = 'Line Chart Select',choices = line_chart_choices)
+      )
+    #   )
+    # 
+    # ,mainPanel(
+    #   plotOutput('defects')
+    #   ,br()
+    #   ,plotOutput('timedown')
+    #   ,br()
+    #   ,plotOutput('incidents')
+    #            )
+    
+        #   )
+
+    ,mainPanel(
+        fluidRow(
+        splitLayout(style = "border: 1px solid silver:"
+          ,plotOutput('defects')
+          ,plotOutput('timedown')
+          ,plotOutput('incidents')
+                 )
+        ,plotOutput('linechart')
+        ))
+  ))
+
+
+
+server <- function(input, output) {
+  
+  output$defects = renderPlot({
+    filtered = defect[data.table::between(date,lower = input$dateInput[1],upper = input$dateInput[2])][
+    #  status %in% input$statusInput ][
+        ,.(counts=sum(counts)), by=status]
+    
+    ggplot(filtered, aes(x=reorder(status,counts),y=counts, fill = status))+
+      geom_bar(stat = 'identity')+
+      coord_flip()+
+      ggtitle('Currently in Development')+
+      geom_label(aes(label = counts), position = position_nudge(x = 0, y = 10))+
+      xlab('Status') +
+      ylab('Issue Counts') +
+      theme_minimal() +
+       theme(legend.position = '') 
+  })
+  
+  
+   output$timedown = renderPlot({
+   
+    filtered2 = timeup[data.table::between(date,lower = input$dateInput[1],upper = input$dateInput[2])][
+      ,.(avg_min_down = mean(mins_down),avg_min_up = mean(mins_up))] %>% melt(variable.name = 'status',value.name='average_time_down')
+    
+    
+     ggplot(filtered2, aes(x=reorder(status,average_time_down),y=average_time_down, fill = status))+
+      geom_bar(stat = 'identity')+
+      coord_flip()+
+      ggtitle('Time Down/Up')+
+      geom_label(aes(label = floor(average_time_down)), position = position_nudge(x = 0, y = 10))+
+        xlab('Status') +
+      ylab('Minutes')+
+      theme_minimal()+
+       theme(legend.position = '') 
+  })
+  
+   output$incidents = renderPlot({
+   
+    filtered3 = incidents[data.table::between(date,lower = input$dateInput[1],upper = input$dateInput[2])][
+      ,.(counts=sum(counts)), by=status]
+    
+    
+      ggplot(filtered3, aes(x=reorder(status,counts),y=counts, fill = status))+
+      geom_bar(stat = 'identity')+
+      coord_flip()+
+      ggtitle('Bugs by Severity')+
+      geom_label(aes(label = counts), position = position_nudge(x = 0, y = 10))+
+      xlab('Status') +
+      ylab('Bug Counts')+
+      theme_minimal() +
+        theme(legend.position = '') 
+  })
+    
+    plt = reactive({
+      input$radioButtons
+      if(input$radioInput == 'Issues in Development'){
+        
+        defect[data.table::between(date,lower = input$dateInput[1],upper = input$dateInput[2])][
+     ,':='(date_agg = paste0(lubridate::month(date,label=TRUE),'-',lubridate::year(date)),posix = as.numeric(as.POSIXlt(date)))][
+            ,.(counts = sum(counts),posix = min(posix)),by=c('status','date_agg')][,perc := round(counts/sum(counts),2),by=c('date_agg')]%>%unique() %>%
+           ggplot(aes(x=reorder(date_agg,posix),y=counts,fill=status))+
+             geom_col() +
+              geom_label(aes(label = scales::percent(perc)), position = 'stack')+
+             geom_text(aes(label = status), position =  position_stack(vjust = 0.5))+
+             ylab('Issue Percentage')+
+             xlab('Months')+
+             ggtitle('Issues In Development')+
+              theme_minimal()+
+           theme(legend.position = '') 
+      }else if(input$radioInput == 'Time Down'){
+        
+        timeup[data.table::between(date,lower = input$dateInput[1],upper = input$dateInput[2])][
+     ,':='(date_agg = paste0(lubridate::month(date,label=TRUE),'-',lubridate::year(date)),posix = as.numeric(as.POSIXlt(date)))][
+        ,.(mins_up = sum(mins_up),mins_down = sum(mins_down), posix = min(posix)),by=c('date_agg')][,':='(up_perc =   round(mins_up/sum(mins_down+mins_up),4),down_perc = round(mins_down/sum(mins_down+mins_up),4)),by=c('date_agg')]%>%unique() %>%
+           ggplot( aes(x=reorder(date_agg,posix),y=mins_down,fill=date_agg))+
+             geom_col() +
+             geom_text(aes(label = scales::percent(round(down_perc,3))), position =  position_stack(vjust = 0.5))+
+             geom_label(aes(label = mins_down),  position = 'stack')+
+             ylab('Minutes Down')+
+             xlab('Months')+
+             ggtitle('System Time Down')+
+            theme_minimal() +
+             theme(legend.position = '') 
+         
+      }else if(input$radioInput == 'Incidents'){
+        
+        incidents[data.table::between(date,lower = input$dateInput[1],upper = input$dateInput[2])][
+      ,':='(date_agg = paste0(lubridate::month(date,label=TRUE),'-',lubridate::year(date)),posix = as.numeric(as.POSIXlt(date)))][
+            ,.(counts = sum(counts),posix = min(posix)),by=c('status','date_agg')][,perc := round(counts/sum(counts),2),by=c('date_agg')]%>%unique() %>%
+           ggplot( aes(x=reorder(date_agg,posix),y=counts,fill=status))+
+             geom_col() +
+              geom_text(aes(label = status), position =  position_stack(vjust = 0.5),angle = 90)+
+              geom_label(aes(label = scales::percent(perc)), position = 'stack')+
+             ylab('Issues by Severity')+
+             xlab('Months')+
+             ggtitle('Bugs by Severity') +
+              theme_minimal()+
+           theme(legend.position = '') 
+      }
+    })
+    
+   output$linechart = renderPlot({plt()})
+     
+}
+shinyApp(ui = ui, server = server)
+
+```
+
